@@ -10,6 +10,7 @@ import cloudscraper
 import m3u8
 import requests
 import yt_dlp
+import ast
 from html.parser import HTMLParser as compat_HTMLParser
 from dotenv import load_dotenv
 from requests.exceptions import ConnectionError as conn_error
@@ -26,8 +27,8 @@ retry = 3
 downloader = None
 HEADERS = {
     "Origin": "www.udemy.com",
-    "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0",
+    # "User-Agent":
+    # "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0",
     "Accept": "*/*",
     "Accept-Encoding": None,
 }
@@ -233,7 +234,7 @@ class Udemy:
                     })
         return _temp
 
-    def _extract_media_sources(self, sources):
+    def _extract_media_sources(self, sources, ytdlp_extractor_args):
         _temp = []
         if sources and isinstance(sources, list):
             for source in sources:
@@ -241,7 +242,7 @@ class Udemy:
                 src = source.get("src")
 
                 if _type == "application/dash+xml":
-                    out = self._extract_mpd(src)
+                    out = self._extract_mpd(src, ytdlp_extractor_args)
                     if out:
                         _temp.extend(out)
         return _temp
@@ -302,14 +303,14 @@ class Udemy:
             print(f"Udemy Says : '{error}' while fetching hls streams..")
         return _temp
 
-    def _extract_mpd(self, url):
+    def _extract_mpd(self, url, ytdlp_extractor_args):
         """extracts mpd streams"""
         _temp = []
         try:
             ytdl = yt_dlp.YoutubeDL({
                 'quiet': True,
                 'no_warnings': True,
-                "allow_unplayable_formats": True
+                "allow_unplayable_formats": True, **ytdlp_extractor_args
             })
             results = ytdl.extract_info(url,
                                         download=False,
@@ -1024,7 +1025,7 @@ def process_caption(caption, lecture_title, lecture_dir, keep_vtt, tries=0):
 
 
 def process_lecture(lecture, lecture_path, lecture_file_name, quality, access_token,
-                    concurrent_connections, chapter_dir):
+                    concurrent_connections, chapter_dir, ytdlp_args):
     lecture_title = lecture.get("lecture_title")
     is_encrypted = lecture.get("is_encrypted")
     lecture_sources = lecture.get("video_sources")
@@ -1073,7 +1074,8 @@ def process_lecture(lecture, lecture_path, lecture_file_name, quality, access_to
                             "yt-dlp", "--force-generic-extractor",
                             "--concurrent-fragments",
                             f"{concurrent_connections}", "--downloader",
-                            "aria2c", "-o", f"{temp_filepath}", f"{url}"
+                            "aria2c", ytdlp_args.split(
+                            ), "-o", f"{temp_filepath}", f"{url}"
                         ]).wait()
                         if ret_code == 0:
                             # os.rename(temp_filepath, lecture_path)
@@ -1092,7 +1094,7 @@ def process_lecture(lecture, lecture_path, lecture_file_name, quality, access_to
 
 
 def parse_new(_udemy, quality, skip_lectures, dl_assets, dl_captions,
-              caption_locale, keep_vtt, access_token, concurrent_connections):
+              caption_locale, keep_vtt, access_token, concurrent_connections, ytdlp_args):
     total_chapters = _udemy.get("total_chapters")
     total_lectures = _udemy.get("total_lectures")
     print(f"Chapter(s) ({total_chapters})")
@@ -1153,7 +1155,7 @@ def parse_new(_udemy, quality, skip_lectures, dl_assets, dl_captions,
                     else:
                         process_lecture(lecture, lecture_path, lecture_file_name,
                                         quality, access_token,
-                                        concurrent_connections, chapter_dir)
+                                        concurrent_connections, chapter_dir, ytdlp_args)
 
             if dl_assets:
                 assets = lecture.get("assets")
@@ -1380,6 +1382,18 @@ if __name__ == "__main__":
         action="store_true",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--ytdlp-args",
+        dest="ytdlp_args",
+        type=str,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--ytdlp-extractor-args",
+        dest="ytdlp_extractor_args",
+        type=str,
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("-v", "--version", action="version",
                         version='You are running version {version}'.format(version=__version__))
 
@@ -1394,6 +1408,8 @@ if __name__ == "__main__":
     keep_vtt = False
     skip_hls = False
     concurrent_downloads = 10
+    ytdlp_args = ""
+    ytdlp_extractor_args = {}
 
     args = parser.parse_args()
     if args.download_assets:
@@ -1419,6 +1435,10 @@ if __name__ == "__main__":
         elif concurrent_downloads > 30:
             # if the user gave a number thats greater than 30, set cc to the max of 30
             concurrent_downloads = 30
+    if args.ytdlp_args:
+        ytdlp_args = args.ytdlp_args
+    if args.ytdlp_extractor_args:
+        ytdlp_extractor_args = ast.literal_eval(args.ytdlp_extractor_args)
 
     aria_ret_val = check_for_aria()
     if not aria_ret_val:
@@ -1496,7 +1516,7 @@ if __name__ == "__main__":
         else:
             parse_new(_udemy, quality, skip_lectures, dl_assets, dl_captions,
                       caption_locale, keep_vtt, access_token,
-                      concurrent_downloads)
+                      concurrent_downloads, ytdlp_args)
     else:
         _udemy = {}
         _udemy["access_token"] = access_token
@@ -1641,7 +1661,8 @@ if __name__ == "__main__":
                             # encrypted
                             data = asset.get("media_sources")
                             if data and isinstance(data, list):
-                                sources = udemy._extract_media_sources(data)
+                                sources = udemy._extract_media_sources(
+                                    data, ytdlp_extractor_args)
                                 tracks = asset.get("captions")
                                 # duration = asset.get("time_estimation")
                                 subtitles = udemy._extract_subtitles(tracks)
@@ -1731,4 +1752,4 @@ if __name__ == "__main__":
         else:
             parse_new(_udemy, quality, skip_lectures, dl_assets, dl_captions,
                       caption_locale, keep_vtt, access_token,
-                      concurrent_downloads)
+                      concurrent_downloads, ytdlp_args)
